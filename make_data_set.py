@@ -6,9 +6,13 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 import tensorflow_datasets as tfds
 import random
+import tensorflow as tf
 
 
 def tf_tensor_to_pil(image_tensor):
+    """
+    Convert a TensorFlow EagerTensor to a PIL Image.
+    """
     image_np = image_tensor.numpy()
     if image_np.dtype != np.uint8:
         image_np = (255 * image_np).astype(np.uint8)
@@ -19,49 +23,67 @@ def tf_tensor_to_pil(image_tensor):
 
 
 class PairedMNISTTFDSDataset(Dataset):
-    def __init__(self, root, train=True, original_transform=None, corrupted_transform=None):
-        # Load clean MNIST from torchvision.
-        self.original_dataset = datasets.MNIST(root=root, train=train, download=True, transform=original_transform)
-
-        # Load TFDS corrupted MNIST.
+    def __init__(self, root, train=True, original_transform=None, corrupted_transform=None, indices=None):
+        """
+        Returns pairs of images: (original_image, corrupted_image, label)
+        where the original_image is loaded from the TFDS 'mnist_corrupted/identity' dataset
+        and the corrupted_image is loaded from the TFDS 'mnist_corrupted/dotted_line' dataset.
+        The pairing is done by index.
+        Args:
+            root (str): Not directly used (kept for interface compatibility).
+            train (bool): If True, use the 'train' split; else use 'test'.
+            original_transform: Transform to apply to the original image.
+            corrupted_transform: Transform to apply to the corrupted image.
+                                 If None, original_transform is used.
+            indices (list or None): Optional list of indices for subsetting.
+        """
+        # Choose the TFDS split.
         tfds_split = 'train' if train else 'test'
-        ds_corrupted = tfds.load('mnist_corrupted/glass_blur', split=tfds_split, as_supervised=True)
-        self.corrupted_data = list(ds_corrupted)
 
-        if corrupted_transform is None:
-            self.corrupted_transform = original_transform
-        else:
-            self.corrupted_transform = corrupted_transform
+        # Load and convert the original (identity) dataset to a list.
+        self.original_dataset = list(
+            tfds.load('mnist_corrupted/identity', split=tfds_split, as_supervised=True)
+        )
 
-        # Build a mapping from label to all indices for the corrupted dataset.
-        self.corrupted_indices_by_label = {}
-        for idx, (_, label) in enumerate(self.corrupted_data):
-            label = int(label)
-            self.corrupted_indices_by_label.setdefault(label, []).append(idx)
+        # Load and convert the corrupted (dotted_line) dataset to a list.
+        self.corrupted_data = list(
+            tfds.load('mnist_corrupted/fog', split=tfds_split, as_supervised=True)
+        )
+
+        self.original_transform = original_transform
+        self.corrupted_transform = corrupted_transform if corrupted_transform is not None else original_transform
+
+        # Optional: allow subsetting using a list of indices.
+        self.indices = indices
 
     def __len__(self):
+        if self.indices is not None:
+            return len(self.indices)
         return len(self.original_dataset)
 
     def __getitem__(self, idx):
-        # Get the original MNIST image and its label.
-        original_img, original_label = self.original_dataset[idx]
-        # Get list of indices in the corrupted dataset that have the same label.
-        corrupted_indices = self.corrupted_indices_by_label.get(original_label)
-        if not corrupted_indices:
-            raise ValueError(f"No corrupted sample found for label {original_label}")
-        # Select one corrupted image index (randomly or by any preferred strategy).
-        corrupted_idx = random.choice(corrupted_indices)
-        corrupted_img_tf, corrupted_label = self.corrupted_data[corrupted_idx]
+        # Map local index to an actual index if a subset was provided.
+        actual_idx = self.indices[idx] if self.indices is not None else idx
 
-        # Optional: you can check that int(corrupted_label) equals original_label.
-        assert int(corrupted_label) == original_label, (
-            f"Label mismatch after grouping: {original_label} vs {corrupted_label}"
-        )
+        # Retrieve the original image and label.
+        original_img, original_label = self.original_dataset[actual_idx]
+        if not isinstance(original_img, Image.Image):
+            original_img = tf_tensor_to_pil(original_img)
+        # Convert original_label from Tensor to int.
+        if not isinstance(original_label, int):
+            original_label = int(original_label.numpy())
+        if self.original_transform:
+            original_img = self.original_transform(original_img)
 
-        # Convert the TFDS image (EagerTensor) to a PIL image.
+        # Retrieve the corrupted image and label by the same index.
+        corrupted_img_tf, corrupted_label = self.corrupted_data[actual_idx]
+        if not isinstance(corrupted_label, int):
+            corrupted_label = int(corrupted_label.numpy())
+        if corrupted_label != original_label:
+            raise ValueError(
+                f"Label mismatch at index {actual_idx}: original label {original_label} vs corrupted label {corrupted_label}"
+            )
         corrupted_img_pil = tf_tensor_to_pil(corrupted_img_tf)
-
-        # Apply the transformation.
         if self.corrupted_transform:
             corrupted_img = self.corrupted_transform(corrupted_img_pil)
         else:
