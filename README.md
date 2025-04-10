@@ -1,1 +1,1 @@
-# KAN
+# KAN for Image Reconstruction
