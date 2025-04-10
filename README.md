@@ -1,1 +1,1 @@
-# KAN for Image Reconstruction
+# Kolmogorov-Arnold Network (KAN) for Image Reconstruction
